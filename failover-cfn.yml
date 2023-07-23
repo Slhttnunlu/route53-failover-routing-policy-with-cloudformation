@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  With this yaml file, using the failover routing feature of AWS Route 53 service, 1 instance and 1 s3 bucket with static web hosting feature that will be activated in case the instance fails is created.
+Parameters:
+  KeyName:
+    Description: Please enter your Key pair
+    Type: AWS::EC2::KeyPair::KeyName
+  MyVPC:
+    Description: VPC Id of your existing account
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+  #static web hosting bucket
+  S3FailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: your-bucket-name
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        IndexDocument: index.html
+  #bucket public access policy
+  BucketPublicAccessPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3FailBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub "arn:aws:s3:::${S3FailBucket}/*"
+  #ec2 security group
+  Ec2SecGrp:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ec2secgrp-route53-yaml
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref MyVPC
+  #web server instance
+  WebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-090e0fc566929d98b
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: EC3-S3-FullAccess
+      SecurityGroupIds: 
+        - !GetAtt Ec2SecGrp.GroupId
+      Tags:
+        - Key: Name
+          Value: slhttn-test
+      UserData:
+        Fn::Base64:
+          !Sub  |
+            #!/bin/bash
+            yum update -y
+            yum install -y httpd
+            yum install -y wget
+            cd /var/www/html
+            wget https://raw.githubusercontent.com/awsdevopsteam/route-53/master/N.virginia_1/index.html
+            wget https://raw.githubusercontent.com/awsdevopsteam/route-53/master/N.virginia_1/N.virginia_1.jpg
+            systemctl start httpd
+            systemctl enable httpd
+            sudo mkdir s3-files && cd s3-files
+            wget https://raw.githubusercontent.com/Slhttnunlu/route53-failover-routing-policy-with-cloudformation/main/index.html
+            wget https://raw.githubusercontent.com/Slhttnunlu/route53-failover-routing-policy-with-cloudformation/main/sorry.jpg
+            aws s3 cp sorry.jpg s3://bucket-name/
+            aws s3 cp index.html s3://bucket-name/
+  #failover routing primary record
+  MyPrimaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: your-hosted-id
+      Name: bucket-name
+      Type: A
+      Failover: PRIMARY
+      TTL: '60'
+      ResourceRecords:
+        - !GetAtt WebServer.PublicIp
+      SetIdentifier: Primary
+      HealthCheckId: !Ref myHealthCheck
+  #failover routing secondary record
+  MySecondaryRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: your-hosted-id
+      Name: bucket-name
+      Type: A
+      Failover: SECONDARY
+      AliasTarget:
+        DNSName: 'alias-dns-name-for-s3-failover-bucket'
+        EvaluateTargetHealth: false
+        HostedZoneId: Z3AQBSTGFYJSTF
+      SetIdentifier: Secondary
+  #health check for web server
+  myHealthCheck: 
+    Type: 'AWS::Route53::HealthCheck'
+    Properties: 
+      HealthCheckConfig: 
+        IPAddress: !GetAtt WebServer.PublicIp
+        Port: 80
+        Type: HTTP
+        ResourcePath: '/'
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: MyHealthCheck
+        
+Outputs:
+  S3EntPoint:
+    Value: !GetAtt S3FailBucket.WebsiteURL
+  DomainName:
+    Value: your-domain-name
+
+#101. satir asagidakilerle de denenebilir
+#!Select [2, !Split ["/", !GetAtt S3FailBucket.WebsiteURL]]
+#!GetAtt S3FailBucket.WebsiteURL
